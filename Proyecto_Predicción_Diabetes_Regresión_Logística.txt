@@ -1,0 +1,296 @@
+library(visdat)
+library(flextable) 
+library(funModeling)
+library(dlookr)
+library(tidyverse)
+library(qqplotr) #grafigo Q-Q
+library(plotly) #gráfico dinámico
+library(mlbench)
+library(corrplot)
+library(PerformanceAnalytics)
+library(ROCR)
+library(dplyr)
+library(caret)
+library(MASS)
+library(mice) #imputación datos faltantes
+library(factoextra)
+library(gridExtra) 
+library(FactoMineR)
+library(corrplot)
+
+# Cargamos el conjunto de datos
+data("PimaIndiansDiabetes2", package = "mlbench")
+data <- na.omit(PimaIndiansDiabetes2)
+#data <- PimaIndiansDiabetes2
+
+################################################################################
+## Definir variable dependiente y variables independientes; 
+## evaluar que algoritmos utilizar: regresión o clasificación 
+dim(data)
+head(data)
+str(data)
+
+################################################################################
+
+################################################################################
+## Gráfico que visualice la proporción de datos faltantes.
+## Agregaría esta slide en caso de que la base de datos tenga datos faltantes
+#Base de datos original
+data_faltante <- PimaIndiansDiabetes2
+
+## Descripción de los datos
+# a través de una visualización
+visdat::vis_dat(data_faltante,sort_type = FALSE) 
+
+# tabla con datos perdidos y únicos
+diagnose(data_faltante) %>% flextable()
+
+#imputar valores perdidos con función de R
+# función mice busca mejor imputación (mejor método de imputación) y realiza el reemplazo
+imp_dt<-mice(data_faltante[,1:9],m=1,seed=46)
+
+#data con valores imputados - validación imputación
+completedData <- complete(imp_dt,1)
+dim(completedData)
+completedData[4,]
+diagnose(completedData) %>% flextable()
+
+##preparar los datos
+normalise <- function(x) {
+  num <- x - min(x)
+  denom <- max(x) - min(x)
+  return (num/denom)
+}
+diabetes.norm <- as.data.frame(lapply(completedData[,-9], normalise))
+
+#Seleccionar data de entrenamiento y prueba
+set.seed(777)
+selsamp <- sample(2, nrow(completedData), replace = TRUE, prob = c(0.80, 0.2))
+head(selsamp)
+length(selsamp)
+funModeling::freq(selsamp)
+funModeling::freq(completedData$diabetes)
+diabetes.norm$diabetes <- completedData$diabetes
+diabetes.norm$diabetes <- factor(ifelse(diabetes.norm$diabetes == "pos", 1, 0))
+completedData$diabetes <- factor(ifelse(completedData$diabetes == "pos", 1, 0))
+datosnorm.train <- diabetes.norm[selsamp == 1,]
+datosnorm.test <- diabetes.norm[selsamp == 2,]
+datos.train <- completedData[selsamp == 1,]
+datos.test <- completedData[selsamp == 2,]
+
+################################################################################
+
+
+################################################################################
+###################### Regresión Logística #####################################
+################################################################################
+### Ajuste de modelo de regresión lineal o logística, según corresponda,
+# identificar variables significativas.
+
+
+# Entrenar el modelo de regresión logística, al poner un . luego del símbolo ~
+# indicamos que estamos utilizando todas las variables como regresoras
+st.time<-Sys.time()
+modelo_logistico <- glm(diabetes ~ .,
+                        data = datos.train, family = binomial)
+end.time<-Sys.time()
+RegLog1Time = end.time-st.time
+print('Modelo 1 Regresión Logística:')
+print(RegLog1Time)
+
+# Podemos ver la significancia de los parámetros del modelo 
+summary(modelo_logistico)
+# Podemos mirar la columna Pr(>|z|) desde donde p-values menores a un nivel
+# de significancia establecido nos permiten conservar dichos parÃ¡metros
+# por ejemplo  si alpha=0.05 las variables significativas son
+# pregnant, glucose, insulin, mass, pedigree y el intercepto.
+
+# Realizar predicciones en los datos de prueba
+predicciones <- predict(modelo_logistico, newdata = datos.test, type = "response")
+
+# Convertir las probabilidades en clases binarias (0 o 1) usando un umbral
+# Fijar umbral Sigmoide
+umbral <- 0.5
+
+# Convertir las probabilidades en clases binarias
+clases_predichas <- ifelse(predicciones > umbral, 1, 0)
+
+##Mariz de Confusion con funcion confusionMatrix()
+Indicadores_lr<-confusionMatrix(data = factor(clases_predichas),
+                                reference = factor(datos.test$diabetes))
+
+# Mostrar parametros devueltos por la funcion confusionMatrix() como matriz de confusion,
+# accuracy, y otros indicadores
+Indicadores_lr
+
+### Definición de un segundo modelo (utilizando el método backward).############
+
+## Generar nuevos modelos utilizando la técnica backwards
+# Para seleccionar nuevos modelos, podemos conservar solo las variables significativas
+# e ir descartando las que no lograron el nivel de significancia impuesto
+# En este caso vamos a usar el siguiente modelo:
+st.time<-Sys.time()
+modelo_logistico2 <- glm(diabetes ~ pregnant + glucose + insulin + mass + pedigree,
+                         data = datos.train, family = binomial)
+end.time<-Sys.time()
+RegLog1Time = end.time-st.time
+print('Modelo 2 Regresión Logística:')
+print(RegLog1Time)
+
+# no es necesario agregar el intercepto
+
+# Podemos ver la significancia de los parÃ¡metros del segundo modelo 
+summary(modelo_logistico2)
+
+# Realizar predicciones en los datos de prueba
+predicciones2 <- predict(modelo_logistico2, newdata = datos.test, type = "response")
+# no es necesario volver a definir el umbral
+
+# Convertir las probabilidades en clases binarias
+clases_predichas2 <- ifelse(predicciones2 > umbral, 1, 0)
+
+##Mariz de Confusion para el segundo modelo con funcion confusionMatrix()
+Indicadores_lr2<-confusionMatrix(data = factor(clases_predichas2),
+                                 reference = factor(datos.test$diabetes))
+
+# Mostrar parámetros devueltos por la función confusionMatrix() como matriz de confusion,
+# accuracy, y otros indicadores
+Indicadores_lr2
+
+
+### Gráficos para comparar resultados. (ej: scatterplot, curva ROC)#############
+
+# Gráficos para comparar resultados (ROC)
+prm <- prediction(predicciones, datos.test$diabetes)
+prm2 <- prediction(predicciones2, datos.test$diabetes)
+
+prf <- performance(prm, measure = "tpr", x.measure = "fpr")
+prf2 <- performance(prm2, measure = "tpr", x.measure = "fpr")
+#área bajo la curva
+auc <- performance(prm, measure = "auc")
+auc <- auc@y.values[[1]]
+
+auc2 <- performance(prm2, measure = "auc")
+auc2 <- auc2@y.values[[1]]
+
+# Generamos una figura con el área bajo la curva (AUC) en el gráfico ROC 
+plot(prf,col='red')
+plot(prf2,add=T,col='blue')
+legend(0.2, 0.2, legend=c(sprintf("Modelo 1 (AUC=%f)",auc), sprintf("Modelo 2 (AUC=%f)",auc2)),
+       col=c("red", "blue"), lty=1, cex=0.8)
+
+
+### Tabla resumen de medidas para evaluar el desempeño de los modelos implementados.
+
+## Tabla de resumen con los indicadores
+# dataframe con los resultados desde ConfusionMatrix
+dfres<-data.frame(modelo1 = c(Indicadores_lr$overall,Indicadores_lr$byClass), 
+                  modelo2=c(Indicadores_lr2$overall,Indicadores_lr2$byClass))
+
+# agregamos una fila con el AIC, el cual nos sirve para comprar modelos
+# incorporando la complejidad del modelo (nÃºmero de variables)
+aic.models<-data.frame(summary(modelo_logistico)$aic, summary(modelo_logistico2)$aic)
+names(aic.models)<-c("modelo1","modelo2")
+rownames(aic.models) <- "AIC"
+dfres <- rbind(dfres,aic.models)
+
+auc.resultado<-data.frame(auc, auc2)
+names(auc.resultado)<-c("modelo1","modelo2")
+rownames(auc.resultado) <- "AUC"
+dfres <- rbind(dfres,auc.resultado)
+
+# Generamos una tabla de resultados para poder adjuntar al informe
+dfresultados<-data.frame(Indicadores=rownames(dfres),Modelo1=dfres$modelo1,Modelo2=dfres$modelo2) 
+dfresultados  %>% flextable()
+################################################################################
+
+################################################################################
+###################### árbol de decisión  ######################################
+################################################################################
+library(caret)
+library(ROCR)
+library(rpart)
+library(rpart.plot)
+
+control = trainControl(method="repeatedcv", number=10, repeats=3)
+metric = 'Accuracy'
+# Number es igual al número de folds y repeats sería las veces que hacemos la cv
+st.time<-Sys.time()
+fit.dt <- train(diabetes~., data=datos.train, method="rpart", tuneLength = 20, metric=metric, trControl=control, na.action=na.omit)
+end.time<-Sys.time()
+tiempo_dt_cv<-end.time-st.time
+tiempo_dt_cv
+# Notas: 
+# i) No usamos los datos normalizados ya que en árboles de decisión no es necesario
+# ii) usamos cp (complexity parameter) como hiperparámetro a optimizar en la 
+#     validación cruzada(cv). Este parámetro penaliza al arbol cuando tiene muchas ramificaciones
+#     Mientras más alto el cp más pequeño es el arbol. Valores muy pequeños de cp
+#     pueden llegar a un overfitting y valores muy grandes a arboles muy pequeños.
+pm2 <- predict(fit.dt, newdata=datos.test, type="prob")
+prm2 <- prediction(pm2[,2], datos.test$diabetes)
+prf <- performance(prm2, measure = "tpr", x.measure = "fpr")
+plot(prf)
+
+clases_predichas_dt <- ifelse(pm2[,1] > umbral, 0, 1)
+Indicadores_dt<-confusionMatrix(data = factor(clases_predichas_dt),
+                                reference = factor(datos.test$diabetes))
+# usamos el mejor cp desde la cv fit.dt$bestTune$cp
+tree <- rpart(diabetes ~., data = datos.train, 
+              method = "class",cp=fit.dt$bestTune$cp)
+
+rpart.plot(tree,fallen.leaves = FALSE)
+rpart.plot(tree, extra=104, box.palette="GnBu",
+           branch.lty=3, shadow.col="gray", nn=TRUE)
+## Extra:
+# Podemos usar la técnica de prunning para eliminar ciertos brazos del arbol y
+# mejorar (o no) nuestras predicciones. Usamos el mejor cp para esto
+tree.pruned <- prune(tree, cp = fit.dt$bestTune$cp)
+rpart.plot(tree.pruned, extra=104, box.palette="GnBu",
+           branch.lty=3, shadow.col="gray", nn=TRUE)
+# Nota:
+# tiempo_dt_cv (linea 238) (juntar todos en una tabla)
+# Vamos a ocupar fit.dt (linea 236) (hacer la tabla o gráfico)
+# Vamos a ocupar Indicadores_dt (linea 246) (Dejar en una tabla)
+################################################################################
+
+
+################################################################################
+###################### Redes neuronales  #######################################
+################################################################################
+
+################################################################################
+# Redes Neuronales version 1 - Método nnet #####################################
+################################################################################
+# expand.grid nos sirve para definir hiperparámetros del modelo
+# en este caso size corresponde al número de neuronas y capas ocultas
+# decay es un hiperparámetro de regularización
+tune_grid <- expand.grid(size = c(16, 32, 64, 128), decay = c(0.95, 0.1, 0.05, 0.01, 0.001))
+
+st.time<-Sys.time()
+fit.nn <- train(diabetes~., data=datosnorm.train,
+                method = "nnet",metric="Kappa",trControl = control,tuneGrid = tune_grid)#,
+#                preProcess=c("scale","center"),na.action = na.omit,trace=F)
+end.time<-Sys.time()
+tiempo_nn_cv<-end.time-st.time
+tiempo_nn_cv
+# obs: 
+#  i) usamos en este algoritmo los datos normalizados datosnorm.train
+#  ii) en caso de que el algoritmo se demore mucho modificar en linea 284 size
+#      quitando valores por ejemplo usar c(16,32,64). En mi pc demoró 1.93min
+
+pm2.nn <- predict(fit.nn, newdata=datosnorm.test, type="prob")
+prm2.nn <- prediction(pm2.nn[,2], datos.test$diabetes)
+prf.nn <- performance(prm2.nn, measure = "tpr", x.measure = "fpr")
+plot(prf.nn)
+
+clases_predichas_nn <- ifelse(pm2.nn[,1] > umbral, 0, 1)
+Indicadores_nn<-confusionMatrix(data = factor(clases_predichas_nn),
+                                reference = factor(datosnorm.test$diabetes))
+
+## Gráfico de la mejor performance de la red neuronal
+## Utilizar size y decay que aparecen en fit.nn (linea 290)
+library(NeuralNetTools)
+library(nnet)
+nn <- nnet(diabetes~., data=datosnorm.train, size = 16, decay=0.1, maxit=200, trace = FALSE)
+## Hacer Zoom para ver mejor el gráfico
+plotnet(nn)
